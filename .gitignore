@@ -1,0 +1,52 @@
+# Rust
+target/
+Cargo.lock
+*.rlib
+*.rmeta
+*.so
+*.pyd
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test outputs
+results/
+artifacts/
+*.parquet
+*.csv
+*.json
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Build artifacts
+flamegraph.svg
+perf.data*
+
+#md files ignore
+*.md
+
+#text file ignore
+*.txt

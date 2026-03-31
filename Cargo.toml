@@ -1,0 +1,48 @@
+[package]
+name = "scanner-forensics"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+numpy = "0.21"
+ndarray = { version = "0.16", features = ["serde"] }
+image = { version = "0.25", features = ["jpeg", "png", "webp"] }
+rayon = "1.8"
+exif = "0.2"
+arrow = { version = "52", optional = true }
+arrow-array = { version = "52", optional = true }
+arrow-schema = { version = "52", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+logarithm = "0.1"
+rustfft = "6.2"
+num-complex = "0.4"
+rand = "0.8"
+imageproc = "0.24"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", optional = true }
+
+[features]
+default = ["arrow-support", "logging"]
+arrow-support = ["arrow", "arrow-array", "arrow-schema"]
+logging = ["tracing-subscriber"]
+
+[lib]
+name = "scanner_forensics"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+[[py-modules]]
+name = "scanner_forensics"
+initialization = "scanner_forensics.scanner_forensics"
