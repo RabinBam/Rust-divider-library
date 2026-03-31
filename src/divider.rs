@@ -1,7 +1,6 @@
 use crate::error::{Result, ScannerError};
-use ndarray::{s, Array2, Array3};
+use ndarray::{s, Array3};
 use rayon::prelude::*;
-use std::sync::Arc;
 
 /// Configuration for patch extraction
 #[derive(Clone, Debug)]
@@ -74,7 +73,7 @@ impl SpatialDivider {
     /// Vector of ImagePatch objects with spatial metadata
     pub fn divide(&self, image: &Array3<f32>) -> Result<Vec<ImagePatch>> {
         let shape = image.dim();
-        let (height, width, channels) = (shape.0, shape.1, shape.2);
+        let (height, width, _channels) = (shape.0, shape.1, shape.2);
 
         if height < self.config.patch_size || width < self.config.patch_size {
             return Err(ScannerError::DimensionError(format!(
@@ -83,57 +82,41 @@ impl SpatialDivider {
             )));
         }
 
-        // Calculate number of patches in each dimension
-        let num_rows =
-            (height - self.config.patch_size) / self.config.stride + 1;
-        let num_cols =
-            (width - self.config.patch_size) / self.config.stride + 1;
+        let row_starts = self.compute_patch_starts(height);
+        let col_starts = self.compute_patch_starts(width);
 
-        let mut patches = Vec::with_capacity(num_rows * num_cols);
+        let mut patch_locations = Vec::with_capacity(row_starts.len() * col_starts.len());
+        for (row_idx, &row_start) in row_starts.iter().enumerate() {
+            for (col_idx, &col_start) in col_starts.iter().enumerate() {
+                patch_locations.push((row_idx, col_idx, row_start, col_start));
+            }
+        }
 
-        // Extract patches sequentially first, then process in parallel
-        for row_idx in 0..num_rows {
-            for col_idx in 0..num_cols {
-                let row_start = row_idx * self.config.stride;
-                let col_start = col_idx * self.config.stride;
+        patch_locations
+            .into_par_iter()
+            .map(|(row_idx, col_idx, row_start, col_start)| {
+                let patch_pixels = image
+                    .slice(s![
+                        row_start..row_start + self.config.patch_size,
+                        col_start..col_start + self.config.patch_size,
+                        ..
+                    ])
+                    .to_owned();
 
-                // Boundary handling: clip to image size
-                let row_end = (row_start + self.config.patch_size).min(height);
-                let col_end = (col_start + self.config.patch_size).min(width);
-
-                // Extract patch with slice
-                let patch_slice = image.slice(s![
-                    row_start..row_end,
-                    col_start..col_end,
-                    ..
-                ]);
-
-                // Handle edge patches (pad if necessary)
-                let patch_pixels = if row_end - row_start == self.config.patch_size
-                    && col_end - col_start == self.config.patch_size
-                {
-                    patch_slice.to_owned()
-                } else {
-                    // Pad edge patches to full size
-                    self.pad_patch(&patch_slice, channels)?
-                };
-
-                patches.push(ImagePatch {
+                Ok(ImagePatch {
                     pixels: patch_pixels,
                     metadata: PatchMetadata {
                         row_idx,
                         col_idx,
                         absolute_row: row_start,
                         absolute_col: col_start,
-                        height: row_end - row_start,
-                        width: col_end - col_start,
+                        height: self.config.patch_size,
+                        width: self.config.patch_size,
                     },
                     confidence: 1.0,
-                });
-            }
-        }
-
-        Ok(patches)
+                })
+            })
+            .collect()
     }
 
     /// Divide with explicit handling for non-square images
@@ -160,19 +143,25 @@ impl SpatialDivider {
         divider.divide(image)
     }
 
-    /// Pad a patch to the configured patch size
-    fn pad_patch(&self, patch: &ndarray::ArrayView3<f32>, channels: usize) -> Result<Array3<f32>> {
-        let shape = patch.dim();
-        let (h, w) = (shape.0, shape.1);
+    fn compute_patch_starts(&self, dimension: usize) -> Vec<usize> {
+        let patch = self.config.patch_size;
+        let stride = self.config.stride;
 
-        let mut padded = Array3::zeros((self.config.patch_size, self.config.patch_size, channels));
+        let mut starts = Vec::new();
+        let mut current = 0;
 
-        // Copy original data
-        padded.slice_mut(s![..h, ..w, ..])
-            .assign(patch);
+        while current + patch <= dimension {
+            starts.push(current);
+            current += stride;
+        }
 
-        // Simple zero-padding for edges
-        Ok(padded)
+        // Force coverage of the right/bottom edge for non-divisible dimensions.
+        let last_start = dimension - patch;
+        if starts.last().copied() != Some(last_start) {
+            starts.push(last_start);
+        }
+
+        starts
     }
 
     /// Get statistics about patch distribution
@@ -183,13 +172,12 @@ impl SpatialDivider {
             ));
         }
 
-        let num_rows = (image_height - self.config.patch_size) / self.config.stride + 1;
-        let num_cols = (image_width - self.config.patch_size) / self.config.stride + 1;
+        let num_rows = self.compute_patch_starts(image_height).len();
+        let num_cols = self.compute_patch_starts(image_width).len();
         let total_patches = num_rows * num_cols;
 
         // Calculate overlap statistics
         let row_overlap_percent = (1.0 - (self.config.stride as f32 / self.config.patch_size as f32)) * 100.0;
-        let col_overlap_percent = row_overlap_percent; // Square patches
 
         Ok(PatchStats {
             total_patches,
@@ -228,6 +216,35 @@ mod tests {
         
         // With 256 patch size and 128 stride on 512x512: (512-256)/128 + 1 = 3 patches per dimension
         assert_eq!(patches.len(), 9); // 3x3
+    }
+
+    #[test]
+    fn test_edge_coverage_for_non_divisible_dimensions() {
+        let divider = SpatialDivider::new();
+        let image = Array3::<f32>::ones((500, 500, 3));
+        let patches = divider.divide(&image).unwrap();
+
+        assert_eq!(patches.len(), 9);
+        let last_patch = patches
+            .iter()
+            .find(|p| p.metadata.row_idx == 2 && p.metadata.col_idx == 2)
+            .unwrap();
+
+        assert_eq!(last_patch.metadata.absolute_row, 244);
+        assert_eq!(last_patch.metadata.absolute_col, 244);
+    }
+
+    #[test]
+    fn test_patch_shape_is_consistent() {
+        let divider = SpatialDivider::new();
+        let image = Array3::<f32>::ones((300, 300, 3));
+        let patches = divider.divide(&image).unwrap();
+
+        for patch in patches {
+            assert_eq!(patch.pixels.dim(), (256, 256, 3));
+            assert_eq!(patch.metadata.height, 256);
+            assert_eq!(patch.metadata.width, 256);
+        }
     }
 
     #[test]

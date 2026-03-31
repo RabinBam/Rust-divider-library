@@ -10,6 +10,7 @@ This example demonstrates:
 3. Analyzing patches
 4. Interpreting frequency-domain features
 5. Detecting AI artifacts
+
 """
 
 import sys
